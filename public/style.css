@@ -1,0 +1,62 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background-color: #f4f4f4;
+}
+
+nav {
+  background-color: #1f2937;
+  color: white;
+  padding: 20px;
+}
+
+nav h1 {
+  margin: 0;
+}
+
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 20px;
+  padding: 20px;
+}
+
+/* Keeps Units and System Status in one vertical column */
+.dashboard-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-top: 48px;
+}
+
+.panel {
+  background-color: white;
+  padding: 20px;
+  border: 1px solid #d1d5db;
+}
+
+.map-section {
+  min-width: 0;
+}
+
+.map-section h2 {
+  margin-top: 0;
+}
+
+/* Creates the large rectangular map */
+#map {
+  width: 100%;
+  height: 750px;
+  border: 2px solid #9ca3af;
+}
+
+/* Stacks everything vertically on smaller screens */
+@media (max-width: 800px) {
+  .dashboard-layout {
+    grid-template-columns: 1fr;
+  }
+
+  #map {
+    height: 450px;
+  }
+}

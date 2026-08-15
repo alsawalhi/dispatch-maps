@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Dispatch Maps Devops Project</title>
+
+  <!-- Leaflet is an open-source JavaScript mapping library -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  >
+
+  <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+
+  <nav>
+    <h1>Dispatch Maps Devops Project</h1>
+  </nav>
+
+  <main class="dashboard-layout">
+
+    <!-- Left-side dashboard column -->
+    <section class="dashboard-panels">
+
+      <div class="panel">
+        <h2>Units</h2>
+
+        <!-- Unit data from the backend will appear here -->
+        <div id="unit-list">
+          <p>Loading units...</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>System Status</h2>
+        <p>API: Online</p>
+        <p>Database: Not connected</p>
+        <p>Map Service: Ready</p>
+      </div>
+
+    </section>
+
+    <!-- Right-side map section -->
+    <section class="map-section">
+      <h2>Maps</h2>
+      <div id="map"></div>
+    </section>
+
+  </main>
+
+  <!-- Loads the open-source Leaflet JavaScript library -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
+  </script>
+
+  <script>
+    // Creates the Leaflet map and centers it on Dallas.
+    const map = L.map("map").setView([32.7767, -96.7970], 11);
+
+    // Loads map tiles from OpenStreetMap.
+    const streetMap = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        attribution: "&copy; OpenStreetMap contributors",
+      }
+    ).addTo(map);
+
+    // Stores markers so we can move them instead of creating duplicates.
+    const unitMarkers = {};
+
+    // Requests unit data from the Express backend.
+    async function loadUnits() {
+      try {
+        const response = await fetch("/api/units");
+        const units = await response.json();
+
+        const unitList = document.getElementById("unit-list");
+        unitList.innerHTML = "";
+
+        units.forEach((unit) => {
+          // Displays each unit in the Units panel.
+          const unitParagraph = document.createElement("p");
+          unitParagraph.textContent = `${unit.name} - ${unit.status}`;
+          unitList.appendChild(unitParagraph);
+
+          // If the unit has GPS coordinates, display or move its marker.
+          if (unit.location) {
+            const coordinates = [
+              unit.location.latitude,
+              unit.location.longitude
+            ];
+
+            // If the marker already exists, move it.
+            if (unitMarkers[unit.id]) {
+              unitMarkers[unit.id].setLatLng(coordinates);
+
+              unitMarkers[unit.id].setPopupContent(
+                `<b>${unit.name}</b><br>Status: ${unit.status}`
+              );
+            } else {
+              // If the marker does not exist yet, create it.
+              unitMarkers[unit.id] = L.marker(coordinates)
+                .addTo(map)
+                .bindPopup(
+                  `<b>${unit.name}</b><br>Status: ${unit.status}`
+                );
+            }
+          }
+        });
+      } catch (error) {
+        document.getElementById("unit-list").innerHTML =
+          "<p>Unable to load units.</p>";
+      }
+    }
+
+    // Loads GIS data from our GeoJSON file.
+    async function loadGIS() {
+      try {
+        const response = await fetch("/gis/county.geojson");
+        const gisData = await response.json();
+
+        // Creates the GIS layer.
+        const gisLayer = L.geoJSON(gisData).addTo(map);
+
+        // Creates the layer control menu.
+        const baseMaps = {
+          "Street Map": streetMap
+        };
+
+        const overlayMaps = {
+          "GIS Layer": gisLayer
+        };
+
+        L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+      } catch (error) {
+        console.log("Unable to load GIS data.");
+      }
+    }
+
+    // Loads units when the page first opens.
+    loadUnits();
+
+    // Checks the API every 5 seconds for new unit locations.
+    setInterval(loadUnits, 5000);
+
+    // Loads the GIS layer.
+    loadGIS();
+
+  </script>
+
+</body>
+</html>
