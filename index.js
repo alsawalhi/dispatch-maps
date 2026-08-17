@@ -4,6 +4,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   ScanCommand,
+  GetCommand,
 } from "@aws-sdk/lib-dynamodb";
 
 const app = express();
@@ -57,12 +58,34 @@ app.get("/api/units", async (req, res) => {
   }
 });
 
-// Returns one unit by its ID.
-// We will connect this route to DynamoDB in the next step.
-app.get("/api/units/:id", (req, res) => {
-  res.status(501).json({
-    message: "Single unit DynamoDB lookup not implemented yet",
-  });
+// Returns one unit by its ID from DynamoDB.
+app.get("/api/units/:id", async (req, res) => {
+  try {
+    const unitId = parseInt(req.params.id);
+
+    const command = new GetCommand({
+      TableName: "DispatchMapsUnits",
+      Key: {
+        id: unitId,
+      },
+    });
+
+    const response = await dynamoDB.send(command);
+
+    if (!response.Item) {
+      return res.status(404).json({
+        message: "Unit not found",
+      });
+    }
+
+    res.json(response.Item);
+  } catch (error) {
+    console.error("Error reading unit from DynamoDB:", error);
+
+    res.status(500).json({
+      message: "Unable to retrieve unit",
+    });
+  }
 });
 
 // Creates a new unit.
