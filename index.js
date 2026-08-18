@@ -76,8 +76,6 @@ app.get("/api/units", async (req, res) => {
 
     const units = response.Items || [];
 
-    // DynamoDB Scan does not guarantee order,
-    // so we sort the units by ID before returning them.
     units.sort((a, b) => a.id - b.id);
 
     res.json(units);
@@ -238,6 +236,54 @@ app.post("/api/units/:id/location", async (req, res) => {
 
     res.status(500).json({
       message: "Unable to update unit location",
+    });
+  }
+});
+
+
+// =====================================================
+// REMOVE UNIT GPS LOCATION
+// =====================================================
+
+app.delete("/api/units/:id/location", async (req, res) => {
+  try {
+    const unitId = parseInt(req.params.id);
+
+    const command = new UpdateCommand({
+      TableName: tableName,
+
+      Key: {
+        id: unitId,
+      },
+
+      UpdateExpression: "REMOVE #location",
+
+      ExpressionAttributeNames: {
+        "#location": "location",
+      },
+
+      ConditionExpression: "attribute_exists(id)",
+
+      ReturnValues: "ALL_NEW",
+    });
+
+    const response = await dynamoDB.send(command);
+
+    res.json(response.Attributes);
+  } catch (error) {
+    if (error.name === "ConditionalCheckFailedException") {
+      return res.status(404).json({
+        message: "Unit not found",
+      });
+    }
+
+    console.error(
+      "Error removing unit location from DynamoDB:",
+      error
+    );
+
+    res.status(500).json({
+      message: "Unable to remove unit location",
     });
   }
 });
