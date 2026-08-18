@@ -34,6 +34,41 @@ app.use(express.static("public"));
 
 
 // =====================================================
+// UNIT RESPONSE FORMATTER
+// =====================================================
+
+// DynamoDB does not guarantee the order of attributes.
+//
+// This function creates a new JavaScript object in the
+// order we want to return it through the API:
+//
+// id
+// name
+// status
+// location
+//   latitude
+//   longitude
+
+function formatUnit(unit) {
+  const formattedUnit = {
+    id: unit.id,
+    name: unit.name,
+    status: unit.status,
+  };
+
+  // Only include location if the unit currently has one.
+  if (unit.location) {
+    formattedUnit.location = {
+      latitude: unit.location.latitude,
+      longitude: unit.location.longitude,
+    };
+  }
+
+  return formattedUnit;
+}
+
+
+// =====================================================
 // SYSTEM STATUS
 // =====================================================
 
@@ -76,9 +111,14 @@ app.get("/api/units", async (req, res) => {
 
     const units = response.Items || [];
 
+    // DynamoDB Scan does not guarantee item order,
+    // so sort units numerically by ID.
     units.sort((a, b) => a.id - b.id);
 
-    res.json(units);
+    // Format every unit before returning it.
+    const formattedUnits = units.map((unit) => formatUnit(unit));
+
+    res.json(formattedUnits);
   } catch (error) {
     console.error("Error reading units from DynamoDB:", error);
 
@@ -113,7 +153,7 @@ app.get("/api/units/:id", async (req, res) => {
       });
     }
 
-    res.json(response.Item);
+    res.json(formatUnit(response.Item));
   } catch (error) {
     console.error("Error reading unit from DynamoDB:", error);
 
@@ -165,7 +205,7 @@ app.post("/api/units", async (req, res) => {
 
     await dynamoDB.send(command);
 
-    res.status(201).json(newUnit);
+    res.status(201).json(formatUnit(newUnit));
   } catch (error) {
     console.error("Error creating unit in DynamoDB:", error);
 
@@ -221,7 +261,7 @@ app.post("/api/units/:id/location", async (req, res) => {
 
     const response = await dynamoDB.send(command);
 
-    res.json(response.Attributes);
+    res.json(formatUnit(response.Attributes));
   } catch (error) {
     if (error.name === "ConditionalCheckFailedException") {
       return res.status(404).json({
@@ -269,7 +309,7 @@ app.delete("/api/units/:id/location", async (req, res) => {
 
     const response = await dynamoDB.send(command);
 
-    res.json(response.Attributes);
+    res.json(formatUnit(response.Attributes));
   } catch (error) {
     if (error.name === "ConditionalCheckFailedException") {
       return res.status(404).json({
@@ -317,7 +357,7 @@ app.delete("/api/units/:id", async (req, res) => {
 
     res.json({
       message: "Unit deleted",
-      unit: response.Attributes,
+      unit: formatUnit(response.Attributes),
     });
   } catch (error) {
     console.error("Error deleting unit from DynamoDB:", error);
