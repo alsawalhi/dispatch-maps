@@ -137,6 +137,15 @@ app.get("/api/units/:id", async (req, res) => {
 // Creates a new unit in DynamoDB.
 app.post("/api/units", async (req, res) => {
   try {
+    const { name, status } = req.body;
+
+    // Validate required input before writing to DynamoDB.
+    if (!name || !status) {
+      return res.status(400).json({
+        message: "Name and status are required",
+      });
+    }
+
     // Get the existing units so we can determine
     // the next available numeric ID.
     const scanCommand = new ScanCommand({
@@ -155,8 +164,8 @@ app.post("/api/units", async (req, res) => {
 
     const newUnit = {
       id: highestId + 1,
-      name: req.body.name,
-      status: req.body.status,
+      name: name,
+      status: status,
       location: null,
     };
 
