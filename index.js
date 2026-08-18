@@ -18,14 +18,10 @@ const port = 3000;
 // DYNAMODB CLIENT
 // =====================================================
 
-// Create the basic DynamoDB client.
 const dynamoClient = new DynamoDBClient({});
 
-// Wrap the basic client with the Document Client.
-// This lets us work with normal JavaScript objects.
 const dynamoDB = DynamoDBDocumentClient.from(dynamoClient);
 
-// DynamoDB table name.
 const tableName = "DispatchMapsUnits";
 
 
@@ -41,10 +37,6 @@ app.use(express.static("public"));
 // SYSTEM STATUS
 // =====================================================
 
-// System status gives us a simple health-check dashboard.
-// A. API server is working
-// B. Database connection status
-// C. Map service status
 const systemStatus = {
   api: "Online",
   database: "DynamoDB connected",
@@ -74,7 +66,6 @@ app.get("/", (req, res) => {
 // GET ALL UNITS
 // =====================================================
 
-// Returns all units from DynamoDB.
 app.get("/api/units", async (req, res) => {
   try {
     const command = new ScanCommand({
@@ -83,7 +74,13 @@ app.get("/api/units", async (req, res) => {
 
     const response = await dynamoDB.send(command);
 
-    res.json(response.Items);
+    const units = response.Items || [];
+
+    // DynamoDB Scan does not guarantee order,
+    // so we sort the units by ID before returning them.
+    units.sort((a, b) => a.id - b.id);
+
+    res.json(units);
   } catch (error) {
     console.error("Error reading units from DynamoDB:", error);
 
@@ -98,7 +95,6 @@ app.get("/api/units", async (req, res) => {
 // GET ONE UNIT
 // =====================================================
 
-// Returns one unit by its ID from DynamoDB.
 app.get("/api/units/:id", async (req, res) => {
   try {
     const unitId = parseInt(req.params.id);
@@ -134,20 +130,16 @@ app.get("/api/units/:id", async (req, res) => {
 // CREATE NEW UNIT
 // =====================================================
 
-// Creates a new unit in DynamoDB.
 app.post("/api/units", async (req, res) => {
   try {
     const { name, status } = req.body;
 
-    // Validate required input before writing to DynamoDB.
     if (!name || !status) {
       return res.status(400).json({
         message: "Name and status are required",
       });
     }
 
-    // Get the existing units so we can determine
-    // the next available numeric ID.
     const scanCommand = new ScanCommand({
       TableName: tableName,
     });
@@ -156,7 +148,6 @@ app.post("/api/units", async (req, res) => {
 
     const units = scanResponse.Items || [];
 
-    // Find the highest current ID.
     const highestId =
       units.length > 0
         ? Math.max(...units.map((unit) => unit.id))
@@ -191,15 +182,21 @@ app.post("/api/units", async (req, res) => {
 // UPDATE UNIT GPS LOCATION
 // =====================================================
 
-// Updates a unit's GPS location in DynamoDB.
-// Later, a Raspberry Pi can send latitude and longitude here.
 app.post("/api/units/:id/location", async (req, res) => {
   try {
     const unitId = parseInt(req.params.id);
 
+    const { latitude, longitude } = req.body;
+
+    if (latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        message: "Latitude and longitude are required",
+      });
+    }
+
     const location = {
-      latitude: req.body.latitude,
-      longitude: req.body.longitude,
+      latitude: latitude,
+      longitude: longitude,
     };
 
     const command = new UpdateCommand({
@@ -219,11 +216,8 @@ app.post("/api/units/:id/location", async (req, res) => {
         ":location": location,
       },
 
-      // Prevent DynamoDB from accidentally creating
-      // a brand-new unit if the ID does not exist.
       ConditionExpression: "attribute_exists(id)",
 
-      // Return the updated unit after the change.
       ReturnValues: "ALL_NEW",
     });
 
@@ -253,7 +247,6 @@ app.post("/api/units/:id/location", async (req, res) => {
 // DELETE UNIT
 // =====================================================
 
-// Deletes one unit from DynamoDB by its ID.
 app.delete("/api/units/:id", async (req, res) => {
   try {
     const unitId = parseInt(req.params.id);
@@ -265,8 +258,6 @@ app.delete("/api/units/:id", async (req, res) => {
         id: unitId,
       },
 
-      // Return the deleted item so we can confirm
-      // exactly what DynamoDB removed.
       ReturnValues: "ALL_OLD",
     });
 
