@@ -11,6 +11,11 @@ import {
   DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 
+import {
+  S3Client,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
+
 const app = express();
 const port = 3000;
 
@@ -18,14 +23,21 @@ const port = 3000;
 // DYNAMODB CLIENT
 // =====================================================
 
-// Low-level DynamoDB client.
 const dynamoClient = new DynamoDBClient({});
 
-// Document Client lets us work with normal JavaScript objects.
 const dynamoDB = DynamoDBDocumentClient.from(dynamoClient);
 
-// DynamoDB table used by Dispatch Maps.
 const tableName = "DispatchMapsUnits";
+
+
+// =====================================================
+// S3 CLIENT
+// =====================================================
+
+const s3 = new S3Client({});
+
+const bucketName =
+  "dispatchmaps-420404496340-us-east-1-an";
 
 
 // =====================================================
@@ -40,7 +52,6 @@ app.use(express.static("public"));
 // HELPER FUNCTIONS
 // =====================================================
 
-// Keeps API responses in a clean, predictable order.
 function formatUnit(unit) {
   const formattedUnit = {
     id: unit.id,
@@ -59,7 +70,6 @@ function formatUnit(unit) {
 }
 
 
-// Converts a URL ID into a number and checks that it is valid.
 function parseUnitId(id) {
   const unitId = Number(id);
 
@@ -79,6 +89,7 @@ const systemStatus = {
   api: "Online",
   database: "DynamoDB connected",
   mapService: "Ready",
+  storage: "S3 connected",
 };
 
 
@@ -86,8 +97,6 @@ const systemStatus = {
 // STATUS API
 // =====================================================
 
-// GET /api/status
-// Returns general application health information.
 app.get("/api/status", (req, res) => {
   res.json(systemStatus);
 });
@@ -106,10 +115,6 @@ app.get("/", (req, res) => {
 // GET ALL UNITS
 // =====================================================
 
-// GET /api/units
-// DynamoDB command: ScanCommand
-//
-// Reads all units from the table.
 app.get("/api/units", async (req, res) => {
   try {
     const command = new ScanCommand({
@@ -120,7 +125,6 @@ app.get("/api/units", async (req, res) => {
 
     const units = response.Items || [];
 
-    // Scan does not guarantee order.
     units.sort((a, b) => a.id - b.id);
 
     const formattedUnits = units.map((unit) => formatUnit(unit));
@@ -140,10 +144,6 @@ app.get("/api/units", async (req, res) => {
 // GET ONE UNIT
 // =====================================================
 
-// GET /api/units/:id
-// DynamoDB command: GetCommand
-//
-// Reads one unit using its partition key.
 app.get("/api/units/:id", async (req, res) => {
   try {
     const unitId = parseUnitId(req.params.id);
@@ -185,27 +185,16 @@ app.get("/api/units/:id", async (req, res) => {
 // CREATE NEW UNIT
 // =====================================================
 
-// POST /api/units
-// DynamoDB command: PutCommand
-//
-// Request body example:
-// {
-//   "name": "Unit 05",
-//   "status": "Available"
-// }
 app.post("/api/units", async (req, res) => {
   try {
     const { name, status } = req.body;
 
-    // Required-field validation.
     if (!name || !status) {
       return res.status(400).json({
         message: "Name and status are required",
       });
     }
 
-    // Read current units so we can determine
-    // the next numeric ID for this learning project.
     const scanCommand = new ScanCommand({
       TableName: tableName,
     });
@@ -229,8 +218,6 @@ app.post("/api/units", async (req, res) => {
     const command = new PutCommand({
       TableName: tableName,
       Item: newUnit,
-
-      // Prevent accidental overwrite if that ID already exists.
       ConditionExpression: "attribute_not_exists(id)",
     });
 
@@ -257,23 +244,6 @@ app.post("/api/units", async (req, res) => {
 // UPDATE UNIT NAME / STATUS
 // =====================================================
 
-// PATCH /api/units/:id
-// DynamoDB command: UpdateCommand
-//
-// PATCH means partially update an existing resource.
-//
-// Request body examples:
-//
-// {
-//   "status": "Unavailable"
-// }
-//
-// or:
-//
-// {
-//   "name": "Unit 04A",
-//   "status": "Available"
-// }
 app.patch("/api/units/:id", async (req, res) => {
   try {
     const unitId = parseUnitId(req.params.id);
@@ -286,14 +256,12 @@ app.patch("/api/units/:id", async (req, res) => {
 
     const { name, status } = req.body;
 
-    // At least one field must be supplied.
     if (name === undefined && status === undefined) {
       return res.status(400).json({
         message: "Name or status is required",
       });
     }
 
-    // Reject empty values if they are supplied.
     if (name !== undefined && !name) {
       return res.status(400).json({
         message: "Name cannot be empty",
@@ -337,10 +305,8 @@ app.patch("/api/units/:id", async (req, res) => {
 
       ExpressionAttributeValues: expressionAttributeValues,
 
-      // Do not create a new item if the ID does not exist.
       ConditionExpression: "attribute_exists(id)",
 
-      // Return the complete updated unit.
       ReturnValues: "ALL_NEW",
     });
 
@@ -367,14 +333,6 @@ app.patch("/api/units/:id", async (req, res) => {
 // UPDATE UNIT GPS LOCATION
 // =====================================================
 
-// POST /api/units/:id/location
-// DynamoDB command: UpdateCommand
-//
-// Request body example:
-// {
-//   "latitude": 32.7767,
-//   "longitude": -96.797
-// }
 app.post("/api/units/:id/location", async (req, res) => {
   try {
     const unitId = parseUnitId(req.params.id);
@@ -467,11 +425,6 @@ app.post("/api/units/:id/location", async (req, res) => {
 // REMOVE UNIT GPS LOCATION
 // =====================================================
 
-// DELETE /api/units/:id/location
-// DynamoDB command: UpdateCommand
-//
-// Removes only the location attribute.
-// The unit itself remains in DynamoDB.
 app.delete("/api/units/:id/location", async (req, res) => {
   try {
     const unitId = parseUnitId(req.params.id);
@@ -526,10 +479,6 @@ app.delete("/api/units/:id/location", async (req, res) => {
 // DELETE UNIT
 // =====================================================
 
-// DELETE /api/units/:id
-// DynamoDB command: DeleteCommand
-//
-// Deletes the entire unit.
 app.delete("/api/units/:id", async (req, res) => {
   try {
     const unitId = parseUnitId(req.params.id);
@@ -567,6 +516,89 @@ app.delete("/api/units/:id", async (req, res) => {
 
     res.status(500).json({
       message: "Unable to delete unit",
+    });
+  }
+});
+
+
+// =====================================================
+// EXPORT UNITS TO S3
+// =====================================================
+
+// POST /api/export/units
+//
+// Flow:
+//
+// Postman
+//   ↓
+// Express API
+//   ↓
+// ScanCommand reads DynamoDB
+//   ↓
+// JSON.stringify converts the units to JSON
+//   ↓
+// PutObjectCommand uploads the JSON to S3
+//   ↓
+// S3 stores exports/units.json
+
+app.post("/api/export/units", async (req, res) => {
+  try {
+    // STEP 1:
+    // Read all current units from DynamoDB.
+
+    const scanCommand = new ScanCommand({
+      TableName: tableName,
+    });
+
+    const scanResponse = await dynamoDB.send(scanCommand);
+
+    const units = scanResponse.Items || [];
+
+    units.sort((a, b) => a.id - b.id);
+
+    const formattedUnits = units.map((unit) => formatUnit(unit));
+
+
+    // STEP 2:
+    // Convert the JavaScript array into JSON text.
+
+    const jsonData = JSON.stringify(formattedUnits, null, 2);
+
+
+    // STEP 3:
+    // Create the S3 upload command.
+
+    const s3Command = new PutObjectCommand({
+      Bucket: bucketName,
+
+      Key: "exports/units.json",
+
+      Body: jsonData,
+
+      ContentType: "application/json",
+    });
+
+
+    // STEP 4:
+    // Send the upload request to S3.
+
+    await s3.send(s3Command);
+
+
+    // STEP 5:
+    // Tell Postman that the export succeeded.
+
+    res.status(200).json({
+      message: "Units exported to S3 successfully",
+      bucket: bucketName,
+      objectKey: "exports/units.json",
+      unitCount: formattedUnits.length,
+    });
+  } catch (error) {
+    console.error("Error exporting units to S3:", error);
+
+    res.status(500).json({
+      message: "Unable to export units to S3",
     });
   }
 });
