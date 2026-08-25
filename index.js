@@ -82,6 +82,94 @@ function parseUnitId(id) {
 
 
 // =====================================================
+// S3 BACKUP / EXPORT FUNCTION
+// =====================================================
+
+// This function:
+//
+// 1. Reads all current units from DynamoDB
+// 2. Converts them into JSON
+// 3. Updates exports/units.json
+// 4. Creates a timestamped history file
+//
+// Because S3 Versioning is enabled,
+// every overwrite of exports/units.json
+// also creates a new S3 version automatically.
+
+async function exportUnitsToS3() {
+  // Read current units from DynamoDB.
+  const scanCommand = new ScanCommand({
+    TableName: tableName,
+  });
+
+  const scanResponse = await dynamoDB.send(scanCommand);
+
+  const units = scanResponse.Items || [];
+
+  units.sort((a, b) => a.id - b.id);
+
+  const formattedUnits = units.map((unit) => formatUnit(unit));
+
+  // Convert JavaScript data into formatted JSON text.
+  const jsonData = JSON.stringify(formattedUnits, null, 2);
+
+
+  // ===================================================
+  // LATEST COPY
+  // ===================================================
+
+  const latestCommand = new PutObjectCommand({
+    Bucket: bucketName,
+
+    Key: "exports/units.json",
+
+    Body: jsonData,
+
+    ContentType: "application/json",
+  });
+
+  const latestResponse = await s3.send(latestCommand);
+
+
+  // ===================================================
+  // TIMESTAMPED HISTORY COPY
+  // ===================================================
+
+  // Example:
+  // 2026-08-25T06-12-30-123Z
+
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/:/g, "-")
+    .replace(/\./g, "-");
+
+  const historyKey =
+    `exports/history/units-${timestamp}.json`;
+
+  const historyCommand = new PutObjectCommand({
+    Bucket: bucketName,
+
+    Key: historyKey,
+
+    Body: jsonData,
+
+    ContentType: "application/json",
+  });
+
+  await s3.send(historyCommand);
+
+
+  // Return useful information to the application.
+  return {
+    unitCount: formattedUnits.length,
+    latestKey: "exports/units.json",
+    historyKey: historyKey,
+    versionId: latestResponse.VersionId,
+  };
+}
+
+
+// =====================================================
 // SYSTEM STATUS
 // =====================================================
 
@@ -217,13 +305,21 @@ app.post("/api/units", async (req, res) => {
 
     const command = new PutCommand({
       TableName: tableName,
+
       Item: newUnit,
+
       ConditionExpression: "attribute_not_exists(id)",
     });
 
     await dynamoDB.send(command);
 
-    res.status(201).json(formatUnit(newUnit));
+    // Automatically update S3 after DynamoDB changes.
+    const backup = await exportUnitsToS3();
+
+    res.status(201).json({
+      unit: formatUnit(newUnit),
+      s3Backup: backup,
+    });
   } catch (error) {
     if (error.name === "ConditionalCheckFailedException") {
       return res.status(409).json({
@@ -231,7 +327,7 @@ app.post("/api/units", async (req, res) => {
       });
     }
 
-    console.error("Error creating unit in DynamoDB:", error);
+    console.error("Error creating unit:", error);
 
     res.status(500).json({
       message: "Unable to create unit",
@@ -275,13 +371,16 @@ app.patch("/api/units/:id", async (req, res) => {
     }
 
     const updateParts = [];
+
     const expressionAttributeNames = {};
+
     const expressionAttributeValues = {};
 
     if (name !== undefined) {
       updateParts.push("#name = :name");
 
       expressionAttributeNames["#name"] = "name";
+
       expressionAttributeValues[":name"] = name;
     }
 
@@ -289,6 +388,7 @@ app.patch("/api/units/:id", async (req, res) => {
       updateParts.push("#status = :status");
 
       expressionAttributeNames["#status"] = "status";
+
       expressionAttributeValues[":status"] = status;
     }
 
@@ -299,20 +399,30 @@ app.patch("/api/units/:id", async (req, res) => {
         id: unitId,
       },
 
-      UpdateExpression: `SET ${updateParts.join(", ")}`,
+      UpdateExpression:
+        `SET ${updateParts.join(", ")}`,
 
-      ExpressionAttributeNames: expressionAttributeNames,
+      ExpressionAttributeNames:
+        expressionAttributeNames,
 
-      ExpressionAttributeValues: expressionAttributeValues,
+      ExpressionAttributeValues:
+        expressionAttributeValues,
 
-      ConditionExpression: "attribute_exists(id)",
+      ConditionExpression:
+        "attribute_exists(id)",
 
       ReturnValues: "ALL_NEW",
     });
 
     const response = await dynamoDB.send(command);
 
-    res.status(200).json(formatUnit(response.Attributes));
+    // Automatically update S3.
+    const backup = await exportUnitsToS3();
+
+    res.status(200).json({
+      unit: formatUnit(response.Attributes),
+      s3Backup: backup,
+    });
   } catch (error) {
     if (error.name === "ConditionalCheckFailedException") {
       return res.status(404).json({
@@ -320,7 +430,7 @@ app.patch("/api/units/:id", async (req, res) => {
       });
     }
 
-    console.error("Error updating unit in DynamoDB:", error);
+    console.error("Error updating unit:", error);
 
     res.status(500).json({
       message: "Unable to update unit",
@@ -345,9 +455,13 @@ app.post("/api/units/:id/location", async (req, res) => {
 
     const { latitude, longitude } = req.body;
 
-    if (latitude === undefined || longitude === undefined) {
+    if (
+      latitude === undefined ||
+      longitude === undefined
+    ) {
       return res.status(400).json({
-        message: "Latitude and longitude are required",
+        message:
+          "Latitude and longitude are required",
       });
     }
 
@@ -356,19 +470,22 @@ app.post("/api/units/:id/location", async (req, res) => {
       typeof longitude !== "number"
     ) {
       return res.status(400).json({
-        message: "Latitude and longitude must be numbers",
+        message:
+          "Latitude and longitude must be numbers",
       });
     }
 
     if (latitude < -90 || latitude > 90) {
       return res.status(400).json({
-        message: "Latitude must be between -90 and 90",
+        message:
+          "Latitude must be between -90 and 90",
       });
     }
 
     if (longitude < -180 || longitude > 180) {
       return res.status(400).json({
-        message: "Longitude must be between -180 and 180",
+        message:
+          "Longitude must be between -180 and 180",
       });
     }
 
@@ -384,7 +501,8 @@ app.post("/api/units/:id/location", async (req, res) => {
         id: unitId,
       },
 
-      UpdateExpression: "SET #location = :location",
+      UpdateExpression:
+        "SET #location = :location",
 
       ExpressionAttributeNames: {
         "#location": "location",
@@ -394,14 +512,21 @@ app.post("/api/units/:id/location", async (req, res) => {
         ":location": location,
       },
 
-      ConditionExpression: "attribute_exists(id)",
+      ConditionExpression:
+        "attribute_exists(id)",
 
       ReturnValues: "ALL_NEW",
     });
 
     const response = await dynamoDB.send(command);
 
-    res.status(200).json(formatUnit(response.Attributes));
+    // Automatically update S3.
+    const backup = await exportUnitsToS3();
+
+    res.status(200).json({
+      unit: formatUnit(response.Attributes),
+      s3Backup: backup,
+    });
   } catch (error) {
     if (error.name === "ConditionalCheckFailedException") {
       return res.status(404).json({
@@ -410,7 +535,7 @@ app.post("/api/units/:id/location", async (req, res) => {
     }
 
     console.error(
-      "Error updating unit location in DynamoDB:",
+      "Error updating unit location:",
       error
     );
 
@@ -448,14 +573,21 @@ app.delete("/api/units/:id/location", async (req, res) => {
         "#location": "location",
       },
 
-      ConditionExpression: "attribute_exists(id)",
+      ConditionExpression:
+        "attribute_exists(id)",
 
       ReturnValues: "ALL_NEW",
     });
 
     const response = await dynamoDB.send(command);
 
-    res.status(200).json(formatUnit(response.Attributes));
+    // Automatically update S3.
+    const backup = await exportUnitsToS3();
+
+    res.status(200).json({
+      unit: formatUnit(response.Attributes),
+      s3Backup: backup,
+    });
   } catch (error) {
     if (error.name === "ConditionalCheckFailedException") {
       return res.status(404).json({
@@ -464,7 +596,7 @@ app.delete("/api/units/:id/location", async (req, res) => {
     }
 
     console.error(
-      "Error removing unit location from DynamoDB:",
+      "Error removing unit location:",
       error
     );
 
@@ -507,12 +639,18 @@ app.delete("/api/units/:id", async (req, res) => {
       });
     }
 
+    // Automatically update S3 after deletion.
+    const backup = await exportUnitsToS3();
+
     res.status(200).json({
       message: "Unit deleted",
+
       unit: formatUnit(response.Attributes),
+
+      s3Backup: backup,
     });
   } catch (error) {
-    console.error("Error deleting unit from DynamoDB:", error);
+    console.error("Error deleting unit:", error);
 
     res.status(500).json({
       message: "Unable to delete unit",
@@ -522,83 +660,34 @@ app.delete("/api/units/:id", async (req, res) => {
 
 
 // =====================================================
-// EXPORT UNITS TO S3
+// MANUAL EXPORT TO S3
 // =====================================================
 
-// POST /api/export/units
+// We are keeping this route.
 //
-// Flow:
-//
-// Postman
-//   ↓
-// Express API
-//   ↓
-// ScanCommand reads DynamoDB
-//   ↓
-// JSON.stringify converts the units to JSON
-//   ↓
-// PutObjectCommand uploads the JSON to S3
-//   ↓
-// S3 stores exports/units.json
+// You do NOT need to call it after every change anymore,
+// but it is useful if you ever want to manually force
+// an export.
 
 app.post("/api/export/units", async (req, res) => {
   try {
-    // STEP 1:
-    // Read all current units from DynamoDB.
-
-    const scanCommand = new ScanCommand({
-      TableName: tableName,
-    });
-
-    const scanResponse = await dynamoDB.send(scanCommand);
-
-    const units = scanResponse.Items || [];
-
-    units.sort((a, b) => a.id - b.id);
-
-    const formattedUnits = units.map((unit) => formatUnit(unit));
-
-
-    // STEP 2:
-    // Convert the JavaScript array into JSON text.
-
-    const jsonData = JSON.stringify(formattedUnits, null, 2);
-
-
-    // STEP 3:
-    // Create the S3 upload command.
-
-    const s3Command = new PutObjectCommand({
-      Bucket: bucketName,
-
-      Key: "exports/units.json",
-
-      Body: jsonData,
-
-      ContentType: "application/json",
-    });
-
-
-    // STEP 4:
-    // Send the upload request to S3.
-
-    await s3.send(s3Command);
-
-
-    // STEP 5:
-    // Tell Postman that the export succeeded.
+    const backup = await exportUnitsToS3();
 
     res.status(200).json({
-      message: "Units exported to S3 successfully",
-      bucket: bucketName,
-      objectKey: "exports/units.json",
-      unitCount: formattedUnits.length,
+      message:
+        "Units exported to S3 successfully",
+
+      ...backup,
     });
   } catch (error) {
-    console.error("Error exporting units to S3:", error);
+    console.error(
+      "Error exporting units to S3:",
+      error
+    );
 
     res.status(500).json({
-      message: "Unable to export units to S3",
+      message:
+        "Unable to export units to S3",
     });
   }
 });
