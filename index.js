@@ -14,6 +14,9 @@ import {
 import {
   S3Client,
   PutObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 
 const app = express();
@@ -85,19 +88,7 @@ function parseUnitId(id) {
 // S3 BACKUP / EXPORT FUNCTION
 // =====================================================
 
-// This function:
-//
-// 1. Reads all current units from DynamoDB
-// 2. Converts them into JSON
-// 3. Updates exports/units.json
-// 4. Creates a timestamped history file
-//
-// Because S3 Versioning is enabled,
-// every overwrite of exports/units.json
-// also creates a new S3 version automatically.
-
 async function exportUnitsToS3() {
-  // Read current units from DynamoDB.
   const scanCommand = new ScanCommand({
     TableName: tableName,
   });
@@ -110,7 +101,6 @@ async function exportUnitsToS3() {
 
   const formattedUnits = units.map((unit) => formatUnit(unit));
 
-  // Convert JavaScript data into formatted JSON text.
   const jsonData = JSON.stringify(formattedUnits, null, 2);
 
 
@@ -135,9 +125,6 @@ async function exportUnitsToS3() {
   // TIMESTAMPED HISTORY COPY
   // ===================================================
 
-  // Example:
-  // 2026-08-25T06-12-30-123Z
-
   const timestamp = new Date()
     .toISOString()
     .replace(/:/g, "-")
@@ -159,7 +146,6 @@ async function exportUnitsToS3() {
   await s3.send(historyCommand);
 
 
-  // Return useful information to the application.
   return {
     unitCount: formattedUnits.length,
     latestKey: "exports/units.json",
@@ -313,7 +299,6 @@ app.post("/api/units", async (req, res) => {
 
     await dynamoDB.send(command);
 
-    // Automatically update S3 after DynamoDB changes.
     const backup = await exportUnitsToS3();
 
     res.status(201).json({
@@ -371,9 +356,7 @@ app.patch("/api/units/:id", async (req, res) => {
     }
 
     const updateParts = [];
-
     const expressionAttributeNames = {};
-
     const expressionAttributeValues = {};
 
     if (name !== undefined) {
@@ -416,7 +399,6 @@ app.patch("/api/units/:id", async (req, res) => {
 
     const response = await dynamoDB.send(command);
 
-    // Automatically update S3.
     const backup = await exportUnitsToS3();
 
     res.status(200).json({
@@ -520,7 +502,6 @@ app.post("/api/units/:id/location", async (req, res) => {
 
     const response = await dynamoDB.send(command);
 
-    // Automatically update S3.
     const backup = await exportUnitsToS3();
 
     res.status(200).json({
@@ -581,7 +562,6 @@ app.delete("/api/units/:id/location", async (req, res) => {
 
     const response = await dynamoDB.send(command);
 
-    // Automatically update S3.
     const backup = await exportUnitsToS3();
 
     res.status(200).json({
@@ -639,7 +619,6 @@ app.delete("/api/units/:id", async (req, res) => {
       });
     }
 
-    // Automatically update S3 after deletion.
     const backup = await exportUnitsToS3();
 
     res.status(200).json({
@@ -663,12 +642,6 @@ app.delete("/api/units/:id", async (req, res) => {
 // MANUAL EXPORT TO S3
 // =====================================================
 
-// We are keeping this route.
-//
-// You do NOT need to call it after every change anymore,
-// but it is useful if you ever want to manually force
-// an export.
-
 app.post("/api/export/units", async (req, res) => {
   try {
     const backup = await exportUnitsToS3();
@@ -688,6 +661,178 @@ app.post("/api/export/units", async (req, res) => {
     res.status(500).json({
       message:
         "Unable to export units to S3",
+    });
+  }
+});
+
+
+// =====================================================
+// GET OBJECT FROM S3
+// =====================================================
+
+// GET /api/export/units
+//
+// Reads:
+// exports/units.json
+//
+// S3 command:
+// GetObjectCommand
+
+app.get("/api/export/units", async (req, res) => {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+
+      Key: "exports/units.json",
+    });
+
+    const response = await s3.send(command);
+
+    const jsonText =
+      await response.Body.transformToString();
+
+    const units = JSON.parse(jsonText);
+
+    res.status(200).json(units);
+  } catch (error) {
+    if (
+      error.name === "NoSuchKey" ||
+      error.name === "NotFound"
+    ) {
+      return res.status(404).json({
+        message: "S3 units export not found",
+      });
+    }
+
+    console.error(
+      "Error reading object from S3:",
+      error
+    );
+
+    res.status(500).json({
+      message:
+        "Unable to retrieve object from S3",
+    });
+  }
+});
+
+
+// =====================================================
+// LIST OBJECTS IN S3
+// =====================================================
+
+// GET /api/s3/objects
+//
+// Lists everything under:
+//
+// exports/
+//
+// S3 command:
+// ListObjectsV2Command
+
+app.get("/api/s3/objects", async (req, res) => {
+  try {
+    const command = new ListObjectsV2Command({
+      Bucket: bucketName,
+
+      Prefix: "exports/",
+    });
+
+    const response = await s3.send(command);
+
+    const objects = response.Contents || [];
+
+    const formattedObjects = objects.map((object) => ({
+      key: object.Key,
+      size: object.Size,
+      lastModified: object.LastModified,
+      etag: object.ETag,
+    }));
+
+    res.status(200).json({
+      bucket: bucketName,
+      objectCount: formattedObjects.length,
+      objects: formattedObjects,
+    });
+  } catch (error) {
+    console.error(
+      "Error listing S3 objects:",
+      error
+    );
+
+    res.status(500).json({
+      message:
+        "Unable to list S3 objects",
+    });
+  }
+});
+
+
+// =====================================================
+// DELETE OBJECT FROM S3
+// =====================================================
+
+// DELETE /api/s3/object
+//
+// Request body example:
+//
+// {
+//   "key": "exports/history/units-2026-08-25T06-30-00-000Z.json"
+// }
+//
+// S3 command:
+// DeleteObjectCommand
+//
+// IMPORTANT:
+// Because S3 Versioning is enabled,
+// deleting a versioned object normally creates
+// a delete marker instead of permanently destroying
+// every older version.
+
+app.delete("/api/s3/object", async (req, res) => {
+  try {
+    const { key } = req.body;
+
+    if (!key) {
+      return res.status(400).json({
+        message: "S3 object key is required",
+      });
+    }
+
+    // Safety check:
+    // Only allow this API to delete objects
+    // inside our exports area.
+    if (!key.startsWith("exports/")) {
+      return res.status(400).json({
+        message:
+          "Only objects under exports/ can be deleted",
+      });
+    }
+
+    const command = new DeleteObjectCommand({
+      Bucket: bucketName,
+
+      Key: key,
+    });
+
+    const response = await s3.send(command);
+
+    res.status(200).json({
+      message: "S3 object deleted",
+      bucket: bucketName,
+      key: key,
+      deleteMarker: response.DeleteMarker || false,
+      versionId: response.VersionId || null,
+    });
+  } catch (error) {
+    console.error(
+      "Error deleting S3 object:",
+      error
+    );
+
+    res.status(500).json({
+      message:
+        "Unable to delete S3 object",
     });
   }
 });
